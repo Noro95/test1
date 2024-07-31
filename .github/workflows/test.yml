@@ -1,0 +1,124 @@
+name: PR Preview
+
+on:
+    pull_request_target:
+        types: ['edited', 'opened', 'reopened', 'synchronize']
+
+permissions:
+    contents: write
+    pull-requests: write
+    actions: write
+
+jobs:
+    preview:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout main repository
+              uses: actions/checkout@v3
+
+            - name: Fetch PR branch from fork
+              run: |
+                  git fetch https://github.com/${{ github.event.pull_request.head.repo.full_name }} ${{ github.event.pull_request.head.ref }}
+
+            - name: Copy contents to preview branch
+              env:
+                  GITHUB_TOKEN: ${{ secrets.PAT }}
+              run: |
+                  PREVIEW_BRANCH="preview-${{ github.event.pull_request.number }}"
+                  git checkout -b $PREVIEW_BRANCH FETCH_HEAD
+                  git push origin $PREVIEW_BRANCH --force
+
+            - name: Trigger Cloudflare Pages preview build
+              id: cf-preview
+              run: |
+                  CF_API_TOKEN=${{ secrets.CF_API_TOKEN }}
+                  CF_ACCOUNT_ID=${{ secrets.CF_ACCOUNT_ID }}
+                  CF_PROJECT_NAME=${{ secrets.CF_PROJECT_NAME }}
+                  PREVIEW_BRANCH="preview-${{ github.event.pull_request.number }}"
+
+                  response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${CF_PROJECT_NAME}/deployments" \
+                    -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                    -H "Content-Type: multipart/form-data" \
+                    -F branch="${PREVIEW_BRANCH}")
+
+                  PREVIEW_URL=$(echo $response | jq -r '.result.url')
+                  SHORT_ID=$(echo $response | jq -r '.result.short_id')
+                  PREVIEW_ID=$(echo $response | jq -r '.result.id')
+                  COMMIT_HASH=$(echo $response | jq -r '.result.deployment_trigger.metadata.commit_hash' | head -c 7) # Extract and shorten commit hash
+
+                  # Replace the short ID in preview URL with the branch name
+                  BRANCH_PREVIEW_URL=$(echo $PREVIEW_URL | sed "s/${SHORT_ID}/${PREVIEW_BRANCH}/")
+
+                  echo "preview_id=$PREVIEW_ID" >> $GITHUB_ENV
+                  echo "short_id=$SHORT_ID" >> $GITHUB_ENV     
+                  echo "preview_url=$PREVIEW_URL" >> $GITHUB_ENV
+                  echo "branch_preview_url=$BRANCH_PREVIEW_URL" >> $GITHUB_ENV
+                  echo "commit_hash=$COMMIT_HASH" >> $GITHUB_ENV
+
+            - name: Find Comment
+              uses: peter-evans/find-comment@v3
+              id: fc
+              with:
+                  issue-number: ${{ github.event.pull_request.number }}
+                  comment-author: 'github-actions[bot]'
+
+            - name: Create Initial "Build in Progress" Comment
+              uses: peter-evans/create-or-update-comment@v4
+              with:
+                  comment-id: ${{ steps.fc.outputs.comment-id }}
+                  issue-number: ${{ github.event.pull_request.number }}
+                  body: |
+                      ## Deploying ${{ secrets.CF_PROJECT_NAME }} with &nbsp;<a href="https://pages.dev"><img alt="Cloudflare Pages" src="https://user-images.githubusercontent.com/23264/106598434-9e719e00-654f-11eb-9e59-6167043cfa01.png" width="16"></a> &nbsp;Cloudflare Pages
+
+                      <table>
+                      <tr><td><strong>Latest commit:</strong> </td><td>
+                      <code>${{ env.commit_hash }}</code>
+                      </td></tr>
+                      <tr><td><strong>Status:</strong></td><td>⚡️&nbsp; Build in progress...</td></tr>
+                      </table>
+
+                      [View logs](https://dash.cloudflare.com/?to=/:account/pages/view/${{ secrets.CF_PROJECT_NAME }}/${{ env.preview_id }})
+                  edit-mode: replace
+
+            - name: Wait for Cloudflare Pages Deployment
+              uses: WalshyDev/cf-pages-await@v1
+              id: cf-pages-await
+              with:
+                  accountId: ${{ secrets.CF_ACCOUNT_ID }}
+                  apiToken: ${{ secrets.CF_API_TOKEN }}
+                  project: ${{ secrets.CF_PROJECT_NAME }}
+
+            - name: Prepare Final Comment Body
+              id: prepare-comment
+              run: |
+                  if [ "${{ steps.cf-pages-await.outputs.success }}" == "true" ]; then
+                      COMMENT_BODY="## Deploying ${{ secrets.CF_PROJECT_NAME }} with &nbsp;<a href=\"https://pages.dev\"><img alt=\"Cloudflare Pages\" src=\"https://user-images.githubusercontent.com/23264/106598434-9e719e00-654f-11eb-9e59-6167043cfa01.png\" width=\"16\"></a> &nbsp;Cloudflare Pages\n\n<table>
+                      <tr><td><strong>Latest commit:</strong> </td><td>
+                      <code>${{ env.commit_hash }}</code>
+                      </td></tr>
+                      <tr><td><strong>Status:</strong></td><td>&nbsp;✅&nbsp; Deploy successful!</td></tr>
+                      <tr><td><strong>Preview URL:</strong></td><td>
+                      <a href='${{ env.preview_url }}'>${{ env.preview_url }}</a>
+                      </td></tr>
+                      <tr><td><strong>Branch Preview URL:</strong></td><td>
+                      <a href='${{ env.branch_preview_url }}'>${{ env.branch_preview_url }}</a>
+                      </td></tr>
+                      </table>\n\n[View logs](https://dash.cloudflare.com/?to=/:account/pages/view/test1/${{ env.preview_id }})"
+                  else
+                      COMMENT_BODY="## Deploying ${{ secrets.CF_PROJECT_NAME }} with &nbsp;<a href=\"https://pages.dev\"><img alt=\"Cloudflare Pages\" src=\"https://user-images.githubusercontent.com/23264/106598434-9e719e00-654f-11eb-9e59-6167043cfa01.png\" width=\"16\"></a> &nbsp;Cloudflare Pages\n\n<table>
+                      <tr><td><strong>Latest commit:</strong> </td><td>
+                      <code>${{ env.commit_hash }}</code>
+                      </td></tr>
+                      <tr><td><strong>Status:</strong></td><td>🚫&nbsp; Build failed.</td></tr>
+                      </table>\n\n[View logs](https://dash.cloudflare.com/?to=/:account/pages/view/${{ secrets.CF_PROJECT_NAME }}/${{ env.preview_id }})"
+                  fi
+
+            - name: Update Comment with Build Status
+              uses: peter-evans/create-or-update-comment@v4
+              with:
+                  comment-id: ${{ steps.fc.outputs.comment-id }}
+                  issue-number: ${{ github.event.pull_request.number }}
+                  body: ${{ env.COMMENT_BODY }}
+                  edit-mode: replace
+

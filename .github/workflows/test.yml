@@ -114,12 +114,10 @@ jobs:
                       </table>\n\n[View logs](https://dash.cloudflare.com/?to=/:account/pages/view/${{ secrets.CF_PROJECT_NAME }}/${{ env.preview_id }})"
                   fi
 
-                  echo "comment_body=$COMMENT_BODY" >> $GITHUB_ENV
-
             - name: Update Comment with Build Status
               uses: peter-evans/create-or-update-comment@v4
               with:
                   comment-id: ${{ steps.fc.outputs.comment-id }}
                   issue-number: ${{ github.event.pull_request.number }}
-                  body: ${{ env.comment_body }}
+                  body: ${{ steps.cf-pages-await.outputs.comment_body }}
                   edit-mode: replace

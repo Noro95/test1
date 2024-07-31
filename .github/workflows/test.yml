@@ -114,6 +114,8 @@ jobs:
                       </table>\n\n[View logs](https://dash.cloudflare.com/?to=/:account/pages/view/${{ secrets.CF_PROJECT_NAME }}/${{ env.preview_id }})"
                   fi
 
+                  echo "COMMENT_BODY=$COMMENT_BODY" >> $GITHUB_ENV
+
             - name: Update Comment with Build Status
               uses: peter-evans/create-or-update-comment@v4
               with:
@@ -121,4 +123,3 @@ jobs:
                   issue-number: ${{ github.event.pull_request.number }}
                   body: ${{ env.COMMENT_BODY }}
                   edit-mode: replace
-

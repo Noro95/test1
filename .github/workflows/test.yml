@@ -47,6 +47,8 @@ jobs:
                   PREVIEW_ID=$(echo $response | jq -r '.result.id')
                   COMMIT_HASH=$(echo $response | jq -r '.result.deployment_trigger.metadata.commit_hash' | head -c 7) # Extract and shorten commit hash
 
+                  echo "Cloudflare Deployment Trigger Response: $response"
+
                   # Replace the short ID in preview URL with the branch name
                   BRANCH_PREVIEW_URL=$(echo $PREVIEW_URL | sed "s/${SHORT_ID}/${PREVIEW_BRANCH}/")
 
